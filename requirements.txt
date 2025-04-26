@@ -2,3 +2,5 @@ streamlit
 scanoss
 pandas
 altair
+geopy>
+pydeck
