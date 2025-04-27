@@ -23,7 +23,7 @@ def get_coords(country: str):
         return None
     return None
 
-# ── Blue Oak Ratings ─────────────────────────────────────────────────────────
+# Load Blue Oak ratings
 try:
     with open("blueoak_ratings.json") as f:
         br = json.load(f)
@@ -36,13 +36,23 @@ try:
 except FileNotFoundError:
     blueoak_map = {}
 
-# ── Algorithm Categories ───────────────────────────────────────────────────────
+# Algorithm categories
 LEGACY_ALGOS = ["md2","md4","md5","rc4","rc4-hmac","des","tdes","ripemd","skipjack"]
 MODERN_ALGOS = ["aes","bcrypt","camellia","pbkdf2","sha2","shax","ecc","x509","hmacx","diffiehellman"]
-QUANTUM_VULNERABLE = {"rsa","dsa","elgamal","diffiehellman","ecmqv","ecc","mqv"}
+PUBLIC_KEY_ALGOS = {"rsa","dsa","diffiehellman","elgamal","ecmqv","ecc","x509"}
+
+# Commands mapping
+COMMANDS = [
+    ("sp", "🛡️ Semgrep Findings", "sp"),
+    ("vulns", "🐞 Vulnerability Findings", "vulns"),
+    ("prv", "🌍 Provenance Info", "prv"),
+    ("vs", "📜 License Ratings", "vs"),
+    ("tl", "🗓️ Release Timeline", "tl"),
+    ("cr", "🔐 Encryption Info", "crypto")
+]
 
 # ── Streamlit Setup ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="🔍 SCANOSS Component Security Report", layout="wide")
+st.set_page_config(page_title="Component Security Report", layout="wide")
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500&family=Source+Sans+Pro&display=swap');
@@ -53,7 +63,7 @@ h1,h2,h3,h4 { font-family: 'Rubik', sans-serif; }
 st.title("🔍 SCANOSS Component Security Report")
 
 # ── CLI Runner ────────────────────────────────────────────────────────────────
-def run_scanoss(sub: str, purl: str):
+def run_scanoss(sub: str, purl: str) -> dict:
     cmd = ["scanoss-py", "comp", sub, "--key", SCANOSS_API_KEY, "--purl", purl]
     try:
         res = subprocess.run(cmd, check=False, capture_output=True, text=True)
@@ -75,109 +85,152 @@ if st.button("Scan"):
         st.error("Please enter a valid PURL.")
         st.stop()
 
-    # Run SCANOSS commands
+    # Run commands with progress
     with st.spinner("Running SCANOSS commands..."):
-        data = {
-            'sp': run_scanoss('sp', purl),
-            'vulns': run_scanoss('vulns', purl),
-            'prv': run_scanoss('prv', purl),
-            'vs': run_scanoss('vs', purl),
-            'cr': run_scanoss('crypto', purl)
-        }
+        progress = st.progress(0)
+        data = {}
+        total = len(COMMANDS)
+        for idx, (key, _, cli) in enumerate(COMMANDS, start=1):
+            data[key] = run_scanoss(cli, purl)
+            progress.progress(int(idx/total * 100))
+        progress.empty()
 
-    # -- Semgrep Findings --
+    # -- Parse Semgrep Findings --
     sem_rows = []
     for p in data['sp'].get('purls', []):
         for f in p.get('files', []):
-            filepath = f.get('path', '')
+            file_path = f.get('path', 'Unknown file')
             for i in f.get('issues', []):
-                rule = i.get('ruleID')
-                severity = i.get('severity')
-                rule_url = f"https://semgrep.dev/r/{rule}"
                 sem_rows.append({
-                    'Rule': rule,
-                    'Severity': severity,
-                    'File': filepath,
-                    'URL': rule_url
+                    'Rule': i['ruleID'],
+                    'Severity': i['severity'],
+                    'File': file_path,
+                    'Rule URL': f"https://semgrep.dev/r/{i['ruleID']}"
                 })
     sem_df = pd.DataFrame(sem_rows)
+    sem_sev = (sem_df['Severity'].value_counts().reset_index() 
+               if not sem_df.empty else pd.DataFrame(columns=['Severity','Count']))
+    sem_sev.columns = ['Severity','Count']
 
-    # -- Vulnerability Findings --
+    # -- Parse Vulnerabilities --
     vuln_rows = []
     for p in data['vulns'].get('purls', []):
-        arr = p.get('vulnerabilities') or p.get('vulns') or []
-        for v in arr:
-            vid = v.get('id') or v.get('cve', '')
-            desc = (v.get('title') or v.get('description', ''))[:200]
-            vid_up = vid.upper()
-            if vid_up.startswith('CVE'):
-                url = f"https://nvd.nist.gov/vuln/detail/{vid_up}"
-            elif vid_up.startswith('GHSA'):
-                url = f"https://github.com/advisories/{vid_up}"
-            else:
-                url = ''
-            vuln_rows.append({
-                'ID': vid,
-                'Severity': v.get('severity') or v.get('cvss_score', ''),
-                'Desc': desc,
-                'URL': url
-            })
+        for arr in (p.get('vulnerabilities', []), p.get('vulns', [])):
+            if isinstance(arr, list):
+                for v in arr:
+                    vid = v.get('id') or v.get('cve', '')
+                    sev = v.get('severity') or v.get('cvss_score', '')
+                    desc = (v.get('title') or v.get('description', ''))[:100]
+                    if vid.startswith('GHSA'):
+                        url = f"https://github.com/advisories/{vid}"
+                    elif vid.startswith('CVE'):
+                        url = f"https://cve.mitre.org/cgi-bin/cvename.cgi?name={vid}"
+                    else:
+                        url = v.get('url', '')
+                    vuln_rows.append({
+                        'ID': vid,
+                        'Severity': sev,
+                        'Description': desc,
+                        'Advisory URL': url
+                    })
+                break
     vuln_df = pd.DataFrame(vuln_rows)
+    vuln_sev = (vuln_df['Severity'].value_counts().reset_index() 
+                if not vuln_df.empty else pd.DataFrame(columns=['Severity','Count']))
+    vuln_sev.columns = ['Severity','Count']
 
-    # -- Provenance Info --
+    # -- Parse Provenance Info --
     declared = data['prv'].get('purls', [{}])[0].get('declared_locations', [])
-    counts = Counter(d.get('location', '').split(',')[-1].strip().title() or 'Unknown' for d in declared)
-    country_df = pd.DataFrame(counts.items(), columns=['Country', 'Count'])
+    counts = Counter()
     coords = []
-    for country, cnt in counts.most_common(25):
+    for d in declared:
+        country = d.get('location', '').split(',')[-1].strip().title() or 'Unknown'
+        counts[country] += 1
+    top = counts.most_common(25)
+    for country, cnt in top:
         coord = get_coords(country)
         if coord:
             coords.append({'lat': coord[0], 'lon': coord[1], 'weight': cnt})
+    country_df = pd.DataFrame(counts.items(), columns=['Country','Contributors'])
     coords_df = pd.DataFrame(coords)
 
-    # -- Versions & License Ratings --
-    comp = data['vs'].get('component', {})
-    homepage = comp.get('url', '')
-    vs_list = comp.get('versions', [])
-    # group contiguous entries with same license
-    license_rows = []
-    groups = []
-    for entry in vs_list:
-        ver = entry.get('version')
-        lic = entry.get('licenses', [{}])[0]
-        spdx = lic.get('spdx_id')
-        name = lic.get('name')
-        lic_url = lic.get('url', '')
-        license_rows.append({'version': ver, 'spdx': spdx, 'name': name, 'lic_url': lic_url})
-    for r in license_rows:
-        if not groups or any(groups[-1][k] != r[k] for k in ('spdx','name','lic_url')):
-            groups.append(dict(start=r['version'], end=r['version'], spdx=r['spdx'], name=r['name'], lic_url=r['lic_url']))
-        else:
-            groups[-1]['end'] = r['version']
-    lic_display = []
-    for g in groups:
-        vr = g['start'] if g['start'] == g['end'] else f"{g['start']}–{g['end']}"
-        lic_display.append({
-            'Version Range': vr,
-            'License': g['name'] or 'Unknown',
-            'SPDX': g['spdx'] or '',
-            'URL': g['lic_url'],
-            'Blue Oak Rating': blueoak_map.get(g['spdx'], 'Not Rated')
-        })
-    lic_df = pd.DataFrame(lic_display)
+    # -- Parse License Ratings --
+    vs_list = data['vs'].get('component', {}).get('versions', [])
+    comp_url = data['vs'].get('component', {}).get('url', '')
 
-    # -- Encryption Info --
+    ranges = []
+    current = None
+    for v in vs_list:
+        ver = v.get('version')
+        lic_list = v.get('licenses', [])
+        if lic_list:
+            lic0 = lic_list[0]
+            spdx = lic0.get('spdx_id')
+            name = lic0.get('name')
+            lurl = lic0.get('url', '')
+        else:
+            spdx = name = lurl = None
+        key = (spdx, name, lurl)
+        if current is None:
+            current = {'start': ver, 'end': ver, 'spdx': spdx, 'name': name, 'url': lurl}
+        elif (current['spdx'], current['name'], current['url']) == key:
+            current['end'] = ver
+        else:
+            ranges.append(current)
+            current = {'start': ver, 'end': ver, 'spdx': spdx, 'name': name, 'url': lurl}
+    if current:
+        ranges.append(current)
+
+    lic_rows = []
+    for r in ranges:
+        if not r['spdx']:
+            continue
+        if r['start'] == r['end']:
+            vr = r['start']
+        else:
+            vr = f"{r['end']} – {r['start']}"
+        rating = blueoak_map.get(r['spdx'], 'Not Rated')
+        lic_rows.append({
+            'Version Range': vr,
+            'License': r['name'],
+            'SPDX': r['spdx'],
+            'Component URL': comp_url,
+            'Blue Oak Rating': rating,
+            'License URL': r['url']
+        })
+    lic_df = pd.DataFrame(lic_rows)
+
+    # -- Parse Encryption Info --
     algos = data['cr'].get('purls', [{}])[0].get('algorithms', [])
     enc_rows = []
     for a in algos:
-        algo = a.get('algorithm')
+        alg = a.get('algorithm')
         strength = a.get('strength')
-        category = 'Legacy' if algo in LEGACY_ALGOS else 'Modern' if algo in MODERN_ALGOS else 'Other'
-        quantum_safe = 'No' if algo in QUANTUM_VULNERABLE else 'Yes'
-        enc_rows.append({'Algorithm': algo, 'Strength': strength, 'Category': category, 'Quantum Safe': quantum_safe})
+        cat = ('Legacy' if alg in LEGACY_ALGOS else 
+               'Modern' if alg in MODERN_ALGOS else 
+               'Other')
+        quantum = ('✖ Not quantum-safe' if alg in PUBLIC_KEY_ALGOS else 
+                   '✔ Quantum-safe')
+        enc_rows.append({
+            'Algorithm': alg,
+            'Strength': strength,
+            'Category': cat,
+            'Quantum Safe': quantum
+        })
     enc_df = pd.DataFrame(enc_rows)
+    cat_counts = (enc_df['Category'].value_counts().reset_index() 
+                  if not enc_df.empty else pd.DataFrame(columns=['Category','Count']))
+    cat_counts.columns = ['Category','Count']
 
-    # ── Tabs ─────────────────────────────────────────────────────────────────
+    # ── Metrics Row ────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Semgrep Issues", len(sem_df))
+    c2.metric("Vulnerabilities", len(vuln_df))
+    c3.metric("Countries", len(country_df))
+    c4.metric("License Ranges", len(lic_df))
+    c5.metric("Algorithms", len(enc_df))
+
+    # ── Tabs ───────────────────────────────────────────────────────────────────
     tabs = st.tabs([
         "📜 License Ratings",
         "🛡️ Semgrep Findings",
@@ -189,87 +242,92 @@ if st.button("Scan"):
 
     # 1. License Ratings
     with tabs[0]:
-        st.subheader("Component Licenses")
-        if homepage:
-            st.markdown(f"**Homepage:** [{homepage}]({homepage})")
+        st.subheader("License Ratings")
         if not lic_df.empty:
             st.table(lic_df)
         else:
-            st.info("No license data available.")
+            st.info("No license metadata available.")
 
     # 2. Semgrep Findings
     with tabs[1]:
-        st.subheader("Static Analysis (Semgrep)")
+        st.subheader("Static Analysis Findings")
         if not sem_df.empty:
-            st.dataframe(sem_df)
-            sev_counts = sem_df['Severity'].value_counts().reset_index()
-            sev_counts.columns = ['Severity','Count']
+            st.write(f"Found **{len(sem_df)}** issues.")
+            st.table(sem_df[['Rule','Severity','File','Rule URL']])
             st.altair_chart(
-                alt.Chart(sev_counts).mark_bar().encode(x='Severity:N', y='Count:Q', color='Severity:N'),
-                use_container_width=True
+                alt.Chart(sem_sev).mark_bar().encode(
+                    x='Severity:N', y='Count:Q', color='Severity:N'
+                ), use_container_width=True
             )
         else:
-            st.info("No Semgrep issues found.")
+            st.info("🚫 No Semgrep issues found.")
 
     # 3. Vulnerability Findings
     with tabs[2]:
-        st.subheader("Vulnerabilities (CVE/GHSA)")
+        st.subheader("Vulnerability Findings")
         if not vuln_df.empty:
-            st.dataframe(vuln_df)
-            v_counts = vuln_df['Severity'].value_counts().reset_index()
-            v_counts.columns = ['Severity','Count']
+            st.write(f"Detected **{len(vuln_df)}** vulnerabilities.")
+            st.table(vuln_df[['ID','Severity','Description','Advisory URL']])
             st.altair_chart(
-                alt.Chart(v_counts).mark_arc(innerRadius=40).encode(theta='Count:Q', color='Severity:N'),
-                use_container_width=True
+                alt.Chart(vuln_sev).mark_arc(innerRadius=40).encode(
+                    theta='Count:Q', color='Severity:N'
+                ), use_container_width=True
             )
         else:
-            st.info("No vulnerabilities detected.")
+            st.info("🛡️ No known vulnerabilities for this component.")
 
     # 4. Provenance Info
     with tabs[3]:
-        st.subheader("Contributor Geography")
-        if not country_df.empty and not coords_df.empty:
-            st.pydeck_chart(
-                pdk.Deck(
-                    layers=[
-                        pdk.Layer('HeatmapLayer', coords_df, get_position='[lon, lat]', get_weight='weight', radiusPixels=60)
-                    ],
-                    initial_view_state=pdk.ViewState(latitude=20, longitude=0, zoom=1)
-                ),
-                use_container_width=True
-            )
+        st.subheader("Contributor Provenance")
+        if not country_df.empty:
+            st.table(country_df)
+            if not coords_df.empty:
+                st.pydeck_chart(
+                    pdk.Deck(
+                        layers=[
+                            pdk.Layer(
+                                'HeatmapLayer', coords_df, get_position='[lon, lat]',
+                                get_weight='weight', radiusPixels=60
+                            )
+                        ],
+                        initial_view_state=pdk.ViewState(latitude=20, longitude=0, zoom=1)
+                    ), use_container_width=True
+                )
         else:
-            st.info("No provenance data available.")
+            st.info("🌐 No contributor provenance data available.")
 
     # 5. Release Timeline
     with tabs[4]:
         st.subheader("Release Timeline")
-        releases = [r['version'] for r in license_rows]
-        if releases:
-            timeline_df = pd.DataFrame({'Index': range(1, len(releases)+1), 'Version': releases})
+        timeline_df = pd.DataFrame({
+            'Index': list(range(1, len(vs_list)+1)),
+            'Version': [v.get('version') for v in vs_list]
+        })
+        if len(vs_list) > 1:
             st.altair_chart(
-                alt.Chart(timeline_df).mark_line(point=True).encode(
-                    x='Index:Q', y='Index:Q', tooltip=['Version']
-                ),
+                alt.Chart(timeline_df).mark_line(point=True)
+                  .encode(x='Index:Q', y='Index:Q', tooltip=['Version:N']),
                 use_container_width=True
             )
             st.table(timeline_df)
         else:
-            st.info("No release data available.")
+            st.info("📈 Only one release found; timeline chart omitted.")
 
     # 6. Encryption Info
     with tabs[5]:
         st.subheader("Encryption Algorithms")
         if not enc_df.empty:
-            st.dataframe(enc_df)
-            q_counts = enc_df['Quantum Safe'].value_counts().reset_index()
-            q_counts.columns = ['Quantum Safe','Count']
+            st.table(enc_df)
             st.altair_chart(
-                alt.Chart(q_counts).mark_arc(innerRadius=40).encode(theta='Count:Q', color='Quantum Safe:N'),
+                alt.Chart(cat_counts).mark_arc(innerRadius=50)
+                  .encode(theta='Count:Q', color='Category:N'),
                 use_container_width=True
             )
         else:
-            st.info("No encryption data available.")
+            st.info("🔒 No encryption metadata found for this component.")
 
     st.success("Analysis complete.")
-    st.download_button("Download JSON", json.dumps(data, indent=2), "scanoss_results.json", "application/json")
+    st.download_button(
+        "Download JSON", json.dumps(data, indent=2), "scanoss_results.json", "application/json"
+    )
+
