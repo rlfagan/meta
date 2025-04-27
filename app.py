@@ -60,7 +60,7 @@ html, body, .block-container { font-family: 'Source Sans Pro', sans-serif; }
 h1,h2,h3,h4 { font-family: 'Rubik', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
-st.title("🔍 SCANOSS Component Security Report")
+st.title("🔍 SCANOSS DEEPSCAN")
 
 # ── CLI Runner ────────────────────────────────────────────────────────────────
 def run_scanoss(sub: str, purl: str) -> dict:
