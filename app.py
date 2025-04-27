@@ -52,7 +52,7 @@ COMMANDS = [
 ]
 
 # ── Streamlit Setup ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="Component Security Report", layout="wide")
+st.set_page_config(page_title="SSCANOSS DEEPSCAN", layout="wide")
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500&family=Source+Sans+Pro&display=swap');
