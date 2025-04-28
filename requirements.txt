@@ -2,5 +2,6 @@ streamlit
 scanoss
 pandas
 altair
-geopy>
+geopy
 pydeck
+tabulate
