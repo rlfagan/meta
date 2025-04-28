@@ -349,3 +349,4 @@ if st.button("Scan"):
         "Download JSON", json.dumps(data, indent=2),
         "scanoss_results.json", "application/json"
     )
+
