@@ -36,6 +36,18 @@ try:
 except FileNotFoundError:
     blueoak_map = {}
 
+# Load SPDX license metadata
+try:
+    with open("licenses.json") as f:
+        spdx_data = json.load(f)
+    spdx_license_map = {
+        lic["licenseId"]: lic
+        for lic in spdx_data.get("licenses", [])
+        if lic.get("licenseId")
+    }
+except FileNotFoundError:
+    spdx_license_map = {}
+
 # Algorithm categories
 LEGACY_ALGOS = ["md2","md4","md5","rc4","rc4-hmac","des","tdes","ripemd","skipjack"]
 MODERN_ALGOS = ["aes","bcrypt","camellia","pbkdf2","sha2","shax","ecc","x509","hmacx","diffiehellman"]
@@ -190,13 +202,22 @@ if st.button("Scan"):
         else:
             vr = f"{r['end']} – {r['start']}"
         rating = blueoak_map.get(r['spdx'], 'Not Rated')
+        # SPDX metadata lookup
+        spdx_info = spdx_license_map.get(r['spdx'], {})
+        osi_approved = spdx_info.get("isOsiApproved", "Unknown")
+        deprecated = spdx_info.get("isDeprecatedLicenseId", "Unknown")
+        spdx_name = spdx_info.get("name", r['name'])
+        spdx_ref = spdx_info.get("reference", "")
         lic_rows.append({
             'Version Range': vr,
-            'License': r['name'],
+            'License': spdx_name,
             'SPDX': r['spdx'],
             'Component URL': comp_url,
             'Blue Oak Rating': rating,
-            'License URL': r['url']
+            'License URL': r['url'],
+            'OSI Approved': osi_approved,
+            'Deprecated': deprecated,
+            'SPDX Reference': spdx_ref
         })
     lic_df = pd.DataFrame(lic_rows)
 
@@ -330,4 +351,3 @@ if st.button("Scan"):
     st.download_button(
         "Download JSON", json.dumps(data, indent=2), "scanoss_results.json", "application/json"
     )
-
